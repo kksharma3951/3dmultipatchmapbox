@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Multipatch Buildings - Mapbox Visualization</title>
+    
+    <!-- Mapbox GL JS CSS and JS -->
+    <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css' rel='stylesheet' />
+    <script src='https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js'></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+        }
+        
+        #map {
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        .map-overlay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 300px;
+            z-index: 1;
+        }
+        
+        .map-overlay h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 16px;
+        }
+        
+        .map-overlay p {
+            margin: 5px 0;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .control-group {
+            margin: 10px 0;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #333;
+        }
+        
+        .control-group input[type="range"] {
+            width: 150px;
+        }
+        
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+            z-index: 1000;
+        }
+        
+        .error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #ffebee;
+            color: #c62828;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading indicator -->
+    <div id="loading" class="loading">
+        <h3>Loading 3D Buildings...</h3>
+        <p>Please wait while the buildings are loaded and processed.</p>
+    </div>
+    
+    <!-- Map container -->
+    <div id="map"></div>
+    
+    <!-- Information overlay -->
+    <div class="map-overlay">
+        <h3>3D Multipatch Buildings</h3>
+        <p><strong>Buildings loaded:</strong> <span id="building-count">0</span></p>
+        <p><strong>Total height:</strong> <span id="total-height">0</span> m</p>
+        <p><strong>Average height:</strong> <span id="avg-height">0</span> m</p>
+        <p><strong>Instructions:</strong></p>
+        <p>• Use mouse to rotate and zoom</p>
+        <p>• Right-click + drag to tilt view</p>
+        <p>• Scroll to zoom in/out</p>
+    </div>
+    
+    <!-- Control panel -->
+    <div class="controls">
+        <div class="control-group">
+            <label for="pitch">Pitch (Tilt): <span id="pitch-value">60</span>°</label>
+            <input type="range" id="pitch" min="0" max="85" value="60" step="5">
+        </div>
+        <div class="control-group">
+            <label for="bearing">Bearing (Rotation): <span id="bearing-value">0</span>°</label>
+            <input type="range" id="bearing" min="0" max="360" value="0" step="15">
+        </div>
+        <div class="control-group">
+            <label for="height-scale">Height Scale: <span id="height-scale-value">1.0</span>x</label>
+            <input type="range" id="height-scale" min="0.1" max="3.0" value="1.0" step="0.1">
+        </div>
+    </div>
+
+    <script>
+        // IMPORTANT: Replace with your Mapbox access token
+        // Get your token from: https://account.mapbox.com/access-tokens/
+        mapboxgl.accessToken = 'pk.eyJ1Ijoia2tzaGFybWEzOTUxIiwiYSI6ImNtM3E2ZzhwYzBibjEycnB2NDh4bW5xYjgifQ.fMZkC9XeIVlkxlZccy74iA';
+        
+        // Check if token is set
+        if (mapboxgl.accessToken === 'pk.eyJ1IjoieW91ci11c2VybmFtZSIsImEiOiJjbGV4YW1wbGUifQ.YOUR_ACCESS_TOKEN_HERE') {
+            document.getElementById('loading').innerHTML = 
+                '<div class="error">' +
+                '<h3>Mapbox Token Required</h3>' +
+                '<p>Please replace the placeholder token in index.html with your actual Mapbox access token.</p>' +
+                '<p>Get your token from: <a href="https://account.mapbox.com/access-tokens/" target="_blank">mapbox.com/access-tokens</a></p>' +
+                '</div>';
+        }
+        
+        // Initialize map
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/light-v11', // Light style to show buildings clearly
+            center: [0, 0], // Will be updated when buildings are loaded
+            zoom: 16,
+            pitch: 60,
+            bearing: 0
+        });
+        
+        let buildingsData = null;
+        let buildingBounds = null;
+        
+        // Load buildings GeoJSON
+        async function loadBuildings() {
+            try {
+                console.log('Loading buildings data...');
+                
+                // Try to load from local file first
+                const response = await fetch('./data/output/buildings.geojson');
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to load buildings.geojson: ${response.status} ${response.statusText}`);
+                }
+                
+                buildingsData = await response.json();
+                console.log('Buildings loaded:', buildingsData);
+                
+                // Calculate bounds and center
+                calculateBounds();
+                
+                // Add buildings to map
+                addBuildingsToMap();
+                
+                // Hide loading indicator
+                document.getElementById('loading').style.display = 'none';
+                
+                // Update statistics
+                updateStatistics();
+                
+            } catch (error) {
+                console.error('Error loading buildings:', error);
+                document.getElementById('loading').innerHTML = 
+                    '<div class="error">' +
+                    '<h3>Error Loading Buildings</h3>' +
+                    '<p>' + error.message + '</p>' +
+                    '<p>Make sure you have:</p>' +
+                    '<p>1. Run "python converter.py" to generate buildings.geojson</p>' +
+                    '<p>2. Place multipatch .shp files in data/input/</p>' +
+                    '</div>';
+            }
+        }
+        
+        function calculateBounds() {
+            if (!buildingsData || !buildingsData.features) return;
+            
+            let minLng = Infinity, minLat = Infinity;
+            let maxLng = -Infinity, maxLat = -Infinity;
+            
+            buildingsData.features.forEach(feature => {
+                if (feature.geometry && feature.geometry.coordinates) {
+                    feature.geometry.coordinates.forEach(ring => {
+                        ring.forEach(coord => {
+                            const [lng, lat] = coord;
+                            minLng = Math.min(minLng, lng);
+                            minLat = Math.min(minLat, lat);
+                            maxLng = Math.max(maxLng, lng);
+                            maxLat = Math.max(maxLat, lat);
+                        });
+                    });
+                }
+            });
+            
+            buildingBounds = [[minLng, minLat], [maxLng, maxLat]];
+            
+            // Fit map to buildings
+            map.fitBounds(buildingBounds, {
+                padding: 50,
+                maxZoom: 18
+            });
+        }
+        
+        function addBuildingsToMap() {
+            if (!buildingsData) return;
+            
+            // Add source
+            map.addSource('buildings', {
+                type: 'geojson',
+                data: buildingsData
+            });
+            
+            // Add 3D extrusion layer
+            map.addLayer({
+                id: 'buildings-3d',
+                type: 'fill-extrusion',
+                source: 'buildings',
+                paint: {
+                    'fill-extrusion-color': [
+                        'case',
+                        ['has', 'height'],
+                        [
+                            'interpolate',
+                            ['linear'],
+                            ['get', 'height'],
+                            0, '#87CEEB',      // Light blue for short buildings
+                            50, '#4682B4',     // Steel blue for medium buildings
+                            100, '#2F4F4F'     // Dark slate gray for tall buildings
+                        ],
+                        '#888888'              // Default gray
+                    ],
+                    'fill-extrusion-height': [
+                        '*',
+                        ['get', 'height'],
+                        parseFloat(document.getElementById('height-scale').value)
+                    ],
+                    'fill-extrusion-base': 0,
+                    'fill-extrusion-opacity': 0.8
+                }
+            });
+            
+            // Add hover effects
+            map.on('mouseenter', 'buildings-3d', function() {
+                map.getCanvas().style.cursor = 'pointer';
+            });
+            
+            map.on('mouseleave', 'buildings-3d', function() {
+                map.getCanvas().style.cursor = '';
+            });
+            
+            // Add click handler for building info
+            map.on('click', 'buildings-3d', function(e) {
+                const feature = e.features[0];
+                const height = feature.properties.height || 'Unknown';
+                const buildingId = feature.properties.id || feature.properties.FID || 'Unknown';
+                
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(`
+                        <div style="padding: 10px;">
+                            <h4>Building Information</h4>
+                            <p><strong>Height:</strong> ${height.toFixed(2)} m</p>
+                            <p><strong>ID:</strong> ${buildingId}</p>
+                        </div>
+                    `)
+                    .addTo(map);
+            });
+        }
+        
+        function updateStatistics() {
+            if (!buildingsData || !buildingsData.features) return;
+            
+            const features = buildingsData.features;
+            const heights = features
+                .map(f => f.properties.height)
+                .filter(h => h !== undefined && h !== null);
+            
+            const totalHeight = heights.reduce((sum, h) => sum + h, 0);
+            const avgHeight = heights.length > 0 ? totalHeight / heights.length : 0;
+            
+            document.getElementById('building-count').textContent = features.length;
+            document.getElementById('total-height').textContent = totalHeight.toFixed(1);
+            document.getElementById('avg-height').textContent = avgHeight.toFixed(1);
+        }
+        
+        // Control event handlers
+        document.getElementById('pitch').addEventListener('input', function(e) {
+            const pitch = parseInt(e.target.value);
+            document.getElementById('pitch-value').textContent = pitch;
+            map.setPitch(pitch);
+        });
+        
+        document.getElementById('bearing').addEventListener('input', function(e) {
+            const bearing = parseInt(e.target.value);
+            document.getElementById('bearing-value').textContent = bearing;
+            map.setBearing(bearing);
+        });
+        
+        document.getElementById('height-scale').addEventListener('input', function(e) {
+            const scale = parseFloat(e.target.value);
+            document.getElementById('height-scale-value').textContent = scale.toFixed(1);
+            
+            if (map.getLayer('buildings-3d')) {
+                map.setPaintProperty('buildings-3d', 'fill-extrusion-height', [
+                    '*',
+                    ['get', 'height'],
+                    scale
+                ]);
+            }
+        });
+        
+        // Load buildings when map is ready
+        map.on('load', loadBuildings);
+        
+        // Add navigation controls
+        map.addControl(new mapboxgl.NavigationControl());
+        
+        // Add scale control
+        map.addControl(new mapboxgl.ScaleControl({
+            maxWidth: 100,
+            unit: 'metric'
+        }));
+    </script>
+</body>
+</html>
+

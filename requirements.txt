@@ -1,0 +1,15 @@
+# Python dependencies for 3D Multipatch to GeoJSON conversion
+# Install with: pip install -r requirements.txt
+
+# Core geospatial libraries
+geopandas>=0.13.0
+shapely>=2.0.0
+
+# Additional dependencies (usually installed with geopandas)
+fiona>=1.8.0
+pyproj>=3.4.0
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Optional: for better performance and additional formats
+rtree>=1.0.0

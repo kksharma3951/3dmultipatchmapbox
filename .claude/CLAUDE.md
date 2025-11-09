@@ -4,6 +4,12 @@
 
 The visualization is now working correctly with proper building heights and multi-level roof details preserved.
 
+### New Feature: Floor Separation Lines (multifloor branch)
+- Added horizontal floor separation lines at 3m intervals
+- Buildings now show clear visual floor divisions
+- Clean beige/tan color scheme for buildings with charcoal gray floor lines
+- Generates 40,877 floor lines for 2,867 buildings (avg 46.3m height)
+
 ## The Fix (Completed)
 
 **Root Cause:** We weren't passing `relative_h=True` to `process_multipatch_file()` on line 159 of converter.py.
@@ -84,6 +90,13 @@ features, crs = process_multipatch_file(shapefile, relative_h=True)
 - **Frontend:** Mapbox GL JS with fill-extrusion layer
 - **Data Format:** GeoJSON with 3D properties
 
+### Floor Separation Lines Implementation
+- **Function:** `generateFloorLines()` in index.html
+- Creates thin horizontal bands (15cm thick) at each floor level
+- Uses `fill-extrusion-base` and `fill-extrusion-height` for positioning
+- Default floor height: 3.0 meters
+- Color scheme: Buildings (#D4C5B0 beige), Floor lines (#3d3d3d charcoal)
+
 ## Key Insights Learned
 
 1. **Absolute vs Relative Heights:**
@@ -109,6 +122,10 @@ python -m http.server 8000
 # Open: http://localhost:8000
 ```
 
-**Current Branch:** main
+**Branches:**
+- `main`: Stable working version with basic 3D building visualization
+- `multifloor`: Floor separation lines feature (in progress)
 
-**Last Updated:** 2025-10-30
+**Current Branch:** multifloor
+
+**Last Updated:** 2025-11-09

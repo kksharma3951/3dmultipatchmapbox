@@ -98,6 +98,70 @@
             max-width: 400px;
             z-index: 1000;
         }
+        
+        .floor-controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 250px;
+            z-index: 1;
+        }
+        
+        .floor-controls h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 14px;
+        }
+        
+        .floor-controls select {
+            width: 100%;
+            padding: 5px;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        
+        .floor-toggle {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 10px;
+        }
+        
+        .floor-button {
+            padding: 5px 10px;
+            font-size: 11px;
+            border: 1px solid #ccc;
+            background: #f0f0f0;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .floor-button:hover {
+            background: #e0e0e0;
+        }
+        
+        .floor-button.active {
+            background: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        
+        .floor-button.hidden {
+            opacity: 0.3;
+        }
+        
+        .floor-info {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+            font-size: 11px;
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -110,16 +174,28 @@
     <!-- Map container -->
     <div id="map"></div>
     
+    <!-- Floor Controls -->
+    <div class="floor-controls" id="floor-controls" style="display: none;">
+        <h4>Multi-Floor Visualization</h4>
+        <select id="building-selector">
+            <option value="">Select Building...</option>
+        </select>
+        <div id="floor-toggle-container" class="floor-toggle"></div>
+        <div class="floor-info" id="floor-info"></div>
+    </div>
+    
     <!-- Information overlay -->
     <div class="map-overlay">
         <h3>3D Multipatch Buildings</h3>
         <p><strong>Buildings loaded:</strong> <span id="building-count">0</span></p>
+        <p><strong>Floor lines:</strong> <span id="floor-lines-count">0</span></p>
         <p><strong>Total height:</strong> <span id="total-height">0</span> m</p>
         <p><strong>Average height:</strong> <span id="avg-height">0</span> m</p>
         <p><strong>Instructions:</strong></p>
         <p>• Use mouse to rotate and zoom</p>
         <p>• Right-click + drag to tilt view</p>
         <p>• Scroll to zoom in/out</p>
+        <p>• Select building to view floors</p>
     </div>
     
     <!-- Control panel -->
@@ -165,6 +241,11 @@
         
         let buildingsData = null;
         let buildingBounds = null;
+        let processedBuildingsData = null;
+        let buildingFloors = {}; // Store floor information per building
+        let selectedBuildingId = null;
+        let visibleFloors = new Set(); // Track which floors are visible
+        let floorLinesData = null; // Store floor separation line data
         
         // Load buildings GeoJSON
         async function loadBuildings() {
@@ -181,11 +262,22 @@
                 buildingsData = await response.json();
                 console.log('Buildings loaded:', buildingsData);
                 
+                // Process buildings for multi-floor visualization
+                processedBuildingsData = processFloors(buildingsData);
+                console.log('Processed buildings:', processedBuildingsData);
+
+                // Generate floor separation lines
+                floorLinesData = generateFloorLines(buildingsData);
+                console.log('Floor lines data:', floorLinesData);
+
                 // Calculate bounds and center
                 calculateBounds();
-                
+
                 // Add buildings to map
                 addBuildingsToMap();
+                
+                // Setup floor controls
+                setupFloorControls();
                 
                 // Hide loading indicator
                 document.getElementById('loading').style.display = 'none';
@@ -203,6 +295,251 @@
                     '<p>1. Run "python converter.py" to generate buildings.geojson</p>' +
                     '<p>2. Place multipatch .shp files in data/input/</p>' +
                     '</div>';
+            }
+        }
+        
+        /**
+         * Generate floor separation lines from building data
+         * Creates thin horizontal bands at each floor level
+         */
+        function generateFloorLines(geojson, floorHeight = 3.0) {
+            if (!geojson || !geojson.features) return null;
+
+            const floorLineFeatures = [];
+
+            geojson.features.forEach(feature => {
+                if (!feature.geometry || feature.geometry.type !== 'Polygon') return;
+
+                const height = feature.properties.height || 0;
+                if (height <= floorHeight) return; // Skip buildings shorter than one floor
+
+                // Calculate number of floors
+                const numFloors = Math.floor(height / floorHeight);
+
+                // Generate a floor line at each floor level (except the top)
+                for (let floor = 1; floor < numFloors; floor++) {
+                    const floorElevation = floor * floorHeight;
+
+                    // Create a thin band at this floor level
+                    const floorLine = {
+                        type: 'Feature',
+                        properties: {
+                            floor_level: floor,
+                            base_height: floorElevation,
+                            top_height: floorElevation + 0.15, // Very thin (15cm)
+                            STRUCT_ID: feature.properties.STRUCT_ID,
+                            building_height: height
+                        },
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: JSON.parse(JSON.stringify(feature.geometry.coordinates)) // Deep copy
+                        }
+                    };
+
+                    floorLineFeatures.push(floorLine);
+                }
+            });
+
+            console.log(`Generated ${floorLineFeatures.length} floor separation lines`);
+
+            return {
+                type: 'FeatureCollection',
+                features: floorLineFeatures
+            };
+        }
+
+        /**
+         * Process GeoJSON data - just add floor metadata without changing geometry
+         */
+        function processFloors(geojson) {
+            if (!geojson || !geojson.features) return geojson;
+            
+            const buildings = {}; // Group by STRUCT_ID
+            
+            // Group polygons by building
+            geojson.features.forEach(feature => {
+                const structId = feature.properties.STRUCT_ID || feature.properties.id || 'unknown';
+                if (!buildings[structId]) {
+                    buildings[structId] = [];
+                }
+                buildings[structId].push(feature);
+            });
+            
+            // Just add floor number to each polygon based on STRUCT_ID
+            Object.keys(buildings).forEach(structId => {
+                const buildingPolygons = buildings[structId];
+                
+                // All polygons in same building = Floor 0 (no stacking, just metadata)
+                buildingPolygons.forEach(poly => {
+                    poly.properties.floor_number = 0;
+                });
+                
+                buildingFloors[structId] = {
+                    floors: [0],
+                    floorElevations: { 0: 0 },
+                    baseElevation: 0
+                };
+            });
+            
+            console.log(`Processed ${Object.keys(buildings).length} buildings with ${geojson.features.length} polygons`);
+            
+            return geojson;
+        }
+        
+        /**
+         * Setup floor selection controls - simplified to just select by STRUCT_ID
+         */
+        function setupFloorControls() {
+            const buildingSelector = document.getElementById('building-selector');
+            const floorToggleContainer = document.getElementById('floor-toggle-container');
+            const floorInfo = document.getElementById('floor-info');
+            const floorControls = document.getElementById('floor-controls');
+            
+            // Get all unique STRUCT_IDs from the data
+            const structIds = new Set();
+            if (processedBuildingsData && processedBuildingsData.features) {
+                processedBuildingsData.features.forEach(feature => {
+                    const structId = feature.properties.STRUCT_ID;
+                    if (structId !== undefined && structId !== null) {
+                        structIds.add(structId);
+                    }
+                });
+            }
+            
+            const buildingIds = Array.from(structIds).sort((a, b) => a - b);
+            
+            console.log('Found STRUCT_IDs:', buildingIds);
+            console.log('Building floors data:', buildingFloors);
+            
+            if (buildingIds.length === 0) {
+                floorControls.style.display = 'none';
+                console.warn('No STRUCT_IDs found in data');
+                return;
+            }
+            
+            floorControls.style.display = 'block';
+            
+            // Clear existing options
+            buildingSelector.innerHTML = '<option value="">Show All Buildings</option>';
+            
+            buildingIds.forEach(structId => {
+                // Count polygons for this building
+                const polygonCount = processedBuildingsData.features.filter(
+                    f => f.properties.STRUCT_ID === structId
+                ).length;
+                
+                const option = document.createElement('option');
+                option.value = structId;
+                option.textContent = `STRUCT_ID: ${structId} (${polygonCount} polygons)`;
+                buildingSelector.appendChild(option);
+            });
+            
+            // Handle building selection
+            buildingSelector.addEventListener('change', function(e) {
+                selectedBuildingId = e.target.value ? parseInt(e.target.value) : null;
+                visibleFloors.clear();
+                
+                console.log('Selected STRUCT_ID:', selectedBuildingId);
+                
+                if (!selectedBuildingId) {
+                    floorToggleContainer.innerHTML = '';
+                    floorInfo.innerHTML = '';
+                    updateBuildingVisibility();
+                    return;
+                }
+                
+                // Get floor information for this building
+                const buildingInfo = buildingFloors[selectedBuildingId];
+                console.log('Building info for STRUCT_ID', selectedBuildingId, ':', buildingInfo);
+                
+                if (buildingInfo && buildingInfo.floors && buildingInfo.floors.length > 0) {
+                    const floors = buildingInfo.floors;
+                    
+                    // Create floor toggle buttons
+                    floorToggleContainer.innerHTML = '';
+                    floors.forEach(floorNum => {
+                        const button = document.createElement('button');
+                        button.className = 'floor-button active';
+                        button.textContent = `Floor ${floorNum}`;
+                        button.dataset.floor = floorNum;
+                        visibleFloors.add(floorNum);
+                        
+                        button.addEventListener('click', function() {
+                            const floor = parseInt(this.dataset.floor);
+                            if (visibleFloors.has(floor)) {
+                                visibleFloors.delete(floor);
+                                this.classList.remove('active');
+                                this.classList.add('hidden');
+                            } else {
+                                visibleFloors.add(floor);
+                                this.classList.add('active');
+                                this.classList.remove('hidden');
+                            }
+                            updateBuildingVisibility();
+                        });
+                        
+                        floorToggleContainer.appendChild(button);
+                    });
+                    
+                    // Show floor information
+                    const floorElevations = buildingInfo.floorElevations;
+                    const baseElev = buildingInfo.baseElevation;
+                    let infoText = `STRUCT_ID: ${selectedBuildingId}<br>`;
+                    infoText += `Base elevation: ${baseElev.toFixed(2)}m<br>`;
+                    floors.forEach(f => {
+                        infoText += `Floor ${f}: ${floorElevations[f].toFixed(2)}m<br>`;
+                    });
+                    floorInfo.innerHTML = infoText;
+                } else {
+                    // No floor data, just show building info
+                    const polygonCount = processedBuildingsData.features.filter(
+                        f => f.properties.STRUCT_ID === selectedBuildingId
+                    ).length;
+                    floorToggleContainer.innerHTML = '';
+                    floorInfo.innerHTML = `STRUCT_ID: ${selectedBuildingId}<br>${polygonCount} polygons<br>(No floor data detected)`;
+                }
+                
+                updateBuildingVisibility();
+            });
+        }
+        
+        /**
+         * Update building visibility based on selected STRUCT_ID and floors
+         */
+        function updateBuildingVisibility() {
+            if (!map.getLayer('buildings-3d')) {
+                console.warn('buildings-3d layer not found');
+                return;
+            }
+            
+            // Create filter for both 3D and outline layers
+            let filter = null;
+            
+            // Update layer filter to show only selected building and floors
+            if (!selectedBuildingId) {
+                // Show all buildings
+                console.log('Showing all buildings');
+                filter = null;
+            } else if (visibleFloors.size === 0) {
+                // Show all floors of selected building
+                console.log('Showing all floors of STRUCT_ID', selectedBuildingId);
+                filter = [
+                    '==', ['get', 'STRUCT_ID'], selectedBuildingId
+                ];
+            } else {
+                // Filter by building and selected floors
+                console.log('Showing STRUCT_ID', selectedBuildingId, 'floors:', Array.from(visibleFloors));
+                filter = [
+                    'all',
+                    ['==', ['get', 'STRUCT_ID'], selectedBuildingId],
+                    ['in', ['get', 'floor_number'], ['literal', Array.from(visibleFloors)]]
+                ];
+            }
+            
+            // Apply filter to both layers
+            map.setFilter('buildings-3d', filter);
+            if (map.getLayer('buildings-outline')) {
+                map.setFilter('buildings-outline', filter);
             }
         }
         
@@ -236,43 +573,65 @@
         }
         
         function addBuildingsToMap() {
-            if (!buildingsData) return;
+            if (!processedBuildingsData) return;
             
-            // Add source
+            // Add source with processed data
             map.addSource('buildings', {
                 type: 'geojson',
-                data: buildingsData
+                data: processedBuildingsData
             });
             
-            // Add 3D extrusion layer
+            // Add 3D extrusion layer with floor support
             map.addLayer({
                 id: 'buildings-3d',
                 type: 'fill-extrusion',
                 source: 'buildings',
                 paint: {
-                    'fill-extrusion-color': [
-                        'case',
-                        ['has', 'height'],
-                        [
-                            'interpolate',
-                            ['linear'],
-                            ['get', 'height'],
-                            0, '#87CEEB',      // Light blue for short buildings
-                            50, '#4682B4',     // Steel blue for medium buildings
-                            100, '#2F4F4F'     // Dark slate gray for tall buildings
-                        ],
-                        '#888888'              // Default gray
-                    ],
+                    // Light beige/tan color for buildings (concrete look)
+                    'fill-extrusion-color': '#D4C5B0',  // Warm tan/beige
                     'fill-extrusion-height': [
                         '*',
-                        ['get', 'height'],
+                        ['get', 'height'], // Always use original height
                         parseFloat(document.getElementById('height-scale').value)
                     ],
+                    // Always render at ground level
                     'fill-extrusion-base': 0,
-                    'fill-extrusion-opacity': 0.8
+                    'fill-extrusion-opacity': 0.9
                 }
             });
             
+            // Add outline/frame for buildings
+            map.addLayer({
+                id: 'buildings-outline',
+                type: 'line',
+                source: 'buildings',
+                paint: {
+                    'line-color': '#4a4a4a',    // Medium-dark gray
+                    'line-width': 1.5,
+                    'line-opacity': 0.8
+                }
+            });
+
+            // Add floor separation lines
+            if (floorLinesData && floorLinesData.features.length > 0) {
+                map.addSource('floor-lines', {
+                    type: 'geojson',
+                    data: floorLinesData
+                });
+
+                map.addLayer({
+                    id: 'floor-lines-3d',
+                    type: 'fill-extrusion',
+                    source: 'floor-lines',
+                    paint: {
+                        'fill-extrusion-color': '#3d3d3d',  // Charcoal gray - strong contrast
+                        'fill-extrusion-height': ['get', 'top_height'],
+                        'fill-extrusion-base': ['get', 'base_height'],
+                        'fill-extrusion-opacity': 1.0  // Full opacity for crisp lines
+                    }
+                });
+            }
+
             // Add hover effects
             map.on('mouseenter', 'buildings-3d', function() {
                 map.getCanvas().style.cursor = 'pointer';
@@ -285,36 +644,53 @@
             // Add click handler for building info
             map.on('click', 'buildings-3d', function(e) {
                 const feature = e.features[0];
-                const height = feature.properties.height || 'Unknown';
-                const buildingId = feature.properties.id || feature.properties.FID || 'Unknown';
+                const props = feature.properties;
+                const height = props.height || 'Unknown';
+                const buildingId = props.STRUCT_ID || props.id || props.FID || 'Unknown';
+                const floorNum = props.floor_number !== undefined ? props.floor_number : 'N/A';
+                const floorElev = props.floor_elevation !== undefined ? props.floor_elevation.toFixed(2) : 'N/A';
+                
+                let html = `
+                    <div style="padding: 10px;">
+                        <h4>Building Information</h4>
+                        <p><strong>Building ID:</strong> ${buildingId}</p>
+                        <p><strong>Height:</strong> ${typeof height === 'number' ? height.toFixed(2) : height} m</p>
+                `;
+                
+                if (props.floor_number !== undefined) {
+                    html += `
+                        <p><strong>Floor:</strong> ${floorNum}</p>
+                        <p><strong>Floor Elevation:</strong> ${floorElev} m</p>
+                    `;
+                }
+                
+                html += `</div>`;
                 
                 new mapboxgl.Popup()
                     .setLngLat(e.lngLat)
-                    .setHTML(`
-                        <div style="padding: 10px;">
-                            <h4>Building Information</h4>
-                            <p><strong>Height:</strong> ${height.toFixed(2)} m</p>
-                            <p><strong>ID:</strong> ${buildingId}</p>
-                        </div>
-                    `)
+                    .setHTML(html)
                     .addTo(map);
             });
         }
         
         function updateStatistics() {
             if (!buildingsData || !buildingsData.features) return;
-            
+
             const features = buildingsData.features;
             const heights = features
                 .map(f => f.properties.height)
                 .filter(h => h !== undefined && h !== null);
-            
+
             const totalHeight = heights.reduce((sum, h) => sum + h, 0);
             const avgHeight = heights.length > 0 ? totalHeight / heights.length : 0;
-            
+
             document.getElementById('building-count').textContent = features.length;
             document.getElementById('total-height').textContent = totalHeight.toFixed(1);
             document.getElementById('avg-height').textContent = avgHeight.toFixed(1);
+
+            // Update floor lines count
+            const floorLinesCount = floorLinesData ? floorLinesData.features.length : 0;
+            document.getElementById('floor-lines-count').textContent = floorLinesCount;
         }
         
         // Control event handlers
@@ -335,11 +711,15 @@
             document.getElementById('height-scale-value').textContent = scale.toFixed(1);
             
             if (map.getLayer('buildings-3d')) {
+                // Update height (always use original height)
                 map.setPaintProperty('buildings-3d', 'fill-extrusion-height', [
                     '*',
                     ['get', 'height'],
                     scale
                 ]);
+                
+                // Keep at ground level
+                map.setPaintProperty('buildings-3d', 'fill-extrusion-base', 0);
             }
         });
         

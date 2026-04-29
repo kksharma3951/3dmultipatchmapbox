@@ -88,35 +88,39 @@ def process_multipatch_file(filepath, z_unit_in='m', z_unit_out='m', relative_h=
                             if z > max_z:
                                 max_z = z
                     
-                    # Skip if not enough vertices or invalid height
-                    if len(vertices_2d) < 3 or max_z <= min_z:
+                    # Skip if not enough vertices
+                    if len(vertices_2d) < 3:
                         continue
-                    
-                    # Calculate building height
-                    height = max_z - min_z
-                    
-                    # Skip buildings that are too small
-                    if height < 0.1:  # Less than 10cm
-                        continue
-                    
-                    # Update minimum height tracking
-                    if height < min_h:
-                        min_h = height
-                    
+
+                    # Use first vertex Z as the face elevation (bbonczak original approach)
+                    # This correctly handles flat faces where min_z == max_z
+                    face_z = polygon[0][2] if len(polygon) > 0 and len(polygon[0]) >= 3 else max_z
+
+                    # Track minimum Z for this feature (used for relative height)
+                    if face_z < min_h:
+                        min_h = face_z
+
+                    # Calculate heights relative to this building's ground elevation
+                    grd_elev = properties.get('GRD_ELEV_2', min_z)
+                    height = max_z - min_z  # part thickness
+                    base_height = 0.0
+                    top_height = max(0.0, face_z - grd_elev)
+
                     # Create new feature
                     new_feature = properties.copy()
                     new_feature['height'] = height
+                    new_feature['base_height'] = base_height
+                    new_feature['top_height'] = top_height
                     new_feature['min_z'] = min_z
                     new_feature['max_z'] = max_z
                     
-                    # Create 2D polygon geometry
+                    # Create 2D polygon geometry (no validity check — matches original bbonczak approach)
                     try:
                         polygon_geom = Polygon(vertices_2d)
-                        if polygon_geom.is_valid:
-                            new_feature['geometry'] = polygon_geom
-                            feature_list.append(new_feature)
+                        new_feature['geometry'] = polygon_geom
+                        feature_list.append(new_feature)
                     except Exception as e:
-                        print(f"  - Warning: Invalid polygon geometry: {e}")
+                        print(f"  - Warning: Could not create polygon: {e}")
                         continue
         
         # Adjust heights if relative_h is True
@@ -182,9 +186,9 @@ def main():
     if not all_features:
         print("No valid building features found in any of the files!")
         return
-    
+
     print(f"\nTotal buildings extracted: {len(all_features)}")
-    
+
     # Create GeoDataFrame from all features
     gdf = gpd.GeoDataFrame(all_features, crs=output_crs)
     

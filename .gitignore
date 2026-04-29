@@ -57,6 +57,11 @@ nul
 debug.html
 debug_data.py
 
+# Playwright CLI snapshots (may contain secrets)
+.playwright-cli/
+*.png
+viz-*.png
+
 # Logs
 *.log
 logs/

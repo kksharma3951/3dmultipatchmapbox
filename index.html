@@ -217,7 +217,7 @@
     <script>
         // IMPORTANT: Replace with your Mapbox access token
         // Get your token from: https://account.mapbox.com/access-tokens/
-        mapboxgl.accessToken = 'pk.eyJ1Ijoia2tzaGFybWEzOTUxIiwiYSI6ImNtM3E2ZzhwYzBibjEycnB2NDh4bW5xYjgifQ.fMZkC9XeIVlkxlZccy74iA';
+        mapboxgl.accessToken = 'YOUR_MAPBOX_TOKEN_HERE';
         
         // Check if token is set
         if (mapboxgl.accessToken === 'pk.eyJ1IjoieW91ci11c2VybmFtZSIsImEiOiJjbGV4YW1wbGUifQ.YOUR_ACCESS_TOKEN_HERE') {
@@ -307,36 +307,47 @@
 
             const floorLineFeatures = [];
 
+            // Group features by STRUCT_ID to find each building's full height
+            const buildings = {};
             geojson.features.forEach(feature => {
-                if (!feature.geometry || feature.geometry.type !== 'Polygon') return;
+                const id = feature.properties.STRUCT_ID;
+                if (!buildings[id]) buildings[id] = [];
+                buildings[id].push(feature);
+            });
 
-                const height = feature.properties.height || 0;
-                if (height <= floorHeight) return; // Skip buildings shorter than one floor
+            Object.values(buildings).forEach(parts => {
+                // Full building height = max top_height across all parts
+                const maxTopHeight = Math.max(...parts.map(p => p.properties.top_height || 0));
+                const minBaseHeight = Math.min(...parts.map(p => p.properties.base_height || 0));
 
-                // Calculate number of floors
-                const numFloors = Math.floor(height / floorHeight);
+                // Skip buildings not near ground level (elevated terrain artifacts)
+                if (minBaseHeight > 5) return;
+                if (maxTopHeight <= floorHeight) return;
 
-                // Generate a floor line at each floor level (except the top)
+                // Use the polygon with the lowest base_height as the floor line footprint
+                const groundPart = parts.reduce((min, p) =>
+                    (p.properties.base_height || 0) < (min.properties.base_height || 0) ? p : min
+                );
+
+                if (!groundPart.geometry || groundPart.geometry.type !== 'Polygon') return;
+
+                const numFloors = Math.floor(maxTopHeight / floorHeight);
                 for (let floor = 1; floor < numFloors; floor++) {
                     const floorElevation = floor * floorHeight;
-
-                    // Create a thin band at this floor level
-                    const floorLine = {
+                    floorLineFeatures.push({
                         type: 'Feature',
                         properties: {
                             floor_level: floor,
                             base_height: floorElevation,
-                            top_height: floorElevation + 0.15, // Very thin (15cm)
-                            STRUCT_ID: feature.properties.STRUCT_ID,
-                            building_height: height
+                            top_height: floorElevation + 0.15,
+                            STRUCT_ID: groundPart.properties.STRUCT_ID,
+                            building_height: maxTopHeight
                         },
                         geometry: {
                             type: 'Polygon',
-                            coordinates: JSON.parse(JSON.stringify(feature.geometry.coordinates)) // Deep copy
+                            coordinates: JSON.parse(JSON.stringify(groundPart.geometry.coordinates))
                         }
-                    };
-
-                    floorLineFeatures.push(floorLine);
+                    });
                 }
             });
 
@@ -591,10 +602,9 @@
                     'fill-extrusion-color': '#D4C5B0',  // Warm tan/beige
                     'fill-extrusion-height': [
                         '*',
-                        ['get', 'height'], // Always use original height
+                        ['get', 'top_height'],
                         parseFloat(document.getElementById('height-scale').value)
                     ],
-                    // Always render at ground level
                     'fill-extrusion-base': 0,
                     'fill-extrusion-opacity': 0.9
                 }
@@ -714,11 +724,9 @@
                 // Update height (always use original height)
                 map.setPaintProperty('buildings-3d', 'fill-extrusion-height', [
                     '*',
-                    ['get', 'height'],
+                    ['get', 'top_height'],
                     scale
                 ]);
-                
-                // Keep at ground level
                 map.setPaintProperty('buildings-3d', 'fill-extrusion-base', 0);
             }
         });
